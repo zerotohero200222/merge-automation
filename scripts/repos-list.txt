@@ -1,0 +1,8 @@
+# Source: main → Target: feature-0.1
+
+infra-terraform
+cloudbuild-trigger-terraform
+cloud-run-terraform-scaling
+ALB-service-terraform-cloudbuild
+api-gateway-terraform-cloudbuild
+
