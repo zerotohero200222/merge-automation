@@ -1,0 +1,152 @@
+name: Multi-Repository Merge (main → feature-0.1)
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_version:
+        description: 'Release version (e.g. 2025.01.15)'
+        required: true
+        default: '2025.01.15'
+        type: string
+
+      use_repo_list:
+        description: 'Use repositories from scripts/repos-list.txt'
+        required: true
+        default: true
+        type: boolean
+
+      specific_repos:
+        description: 'Comma-separated repo names (optional override)'
+        required: false
+        type: string
+
+      dry_run:
+        description: 'Dry run (no push, test only)'
+        required: true
+        default: true
+        type: boolean
+
+env:
+  ORG_NAME: ${{ github.repository_owner }}
+  SOURCE_BRANCH: main
+  TARGET_BRANCH: feature-0.1
+
+jobs:
+  prepare-repos:
+    name: 📋 Prepare Repository List
+    runs-on: ubuntu-latest
+    outputs:
+      repos: ${{ steps.load.outputs.repos }}
+      count: ${{ steps.load.outputs.count }}
+
+    steps:
+      - name: Checkout automation repo
+        uses: actions/checkout@v4
+
+      - name: Load repositories
+        id: load
+        run: |
+          if [ "${{ inputs.use_repo_list }}" = "true" ]; then
+            echo "Reading scripts/repos-list.txt"
+            REPOS=$(grep -v '^#' scripts/repos-list.txt | grep -v '^[[:space:]]*$' | jq -R -s -c 'split("\n")[:-1]')
+          else
+            echo "Using repos from input"
+            REPOS=$(echo "${{ inputs.specific_repos }}" | tr ',' '\n' | jq -R -s -c 'split("\n")[:-1]')
+          fi
+
+          COUNT=$(echo "$REPOS" | jq length)
+
+          echo "repos=$REPOS" >> $GITHUB_OUTPUT
+          echo "count=$COUNT" >> $GITHUB_OUTPUT
+
+          echo "Found $COUNT repositories"
+
+  validate:
+    name: ✅ Validate Configuration
+    runs-on: ubuntu-latest
+    needs: prepare-repos
+
+    steps:
+      - name: Validate inputs
+        run: |
+          echo "Source branch: $SOURCE_BRANCH"
+          echo "Target branch: $TARGET_BRANCH"
+          echo "Repositories:  ${{ needs.prepare-repos.outputs.count }}"
+          echo "Dry run:       ${{ inputs.dry_run }}"
+
+          if [ "${{ needs.prepare-repos.outputs.count }}" -eq 0 ]; then
+            echo "No repositories to process"
+            exit 1
+          fi
+
+  merge:
+    name: 🔀 Merge ${{ matrix.repo }}
+    runs-on: ubuntu-latest
+    needs: [prepare-repos, validate]
+
+    strategy:
+      matrix:
+        repo: ${{ fromJson(needs.prepare-repos.outputs.repos) }}
+      fail-fast: false
+      max-parallel: 5
+
+    steps:
+      - name: Configure Git
+        run: |
+          git config --global user.name "GitHub Actions Bot"
+          git config --global user.email "actions@github.com"
+
+      - name: Clone repository
+        run: |
+          gh repo clone $ORG_NAME/${{ matrix.repo }} repo
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT }}
+
+      - name: Check branches
+        id: branches
+        run: |
+          cd repo
+          git fetch origin
+
+          git ls-remote --heads origin $SOURCE_BRANCH || exit 0
+          git ls-remote --heads origin $TARGET_BRANCH || exit 0
+
+      - name: Merge branches
+        id: merge
+        continue-on-error: true
+        run: |
+          cd repo
+
+          git checkout $TARGET_BRANCH
+          git pull origin $TARGET_BRANCH
+
+          MSG="Release ${{ inputs.release_version }}: Merge $SOURCE_BRANCH → $TARGET_BRANCH"
+
+          if git merge origin/$SOURCE_BRANCH --no-ff -m "$MSG"; then
+            if [ "${{ inputs.dry_run }}" = "false" ]; then
+              git push origin $TARGET_BRANCH
+              echo "Merged and pushed"
+            else
+              echo "DRY RUN: merge successful (not pushed)"
+            fi
+          else
+            git merge --abort
+            exit 1
+          fi
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT }}
+
+  summary:
+    name: 📊 Summary
+    runs-on: ubuntu-latest
+    needs: [prepare-repos, merge]
+    if: always()
+
+    steps:
+      - name: Summary output
+        run: |
+          echo "### Multi-Repo Merge Summary" >> $GITHUB_STEP_SUMMARY
+          echo "- Source: main" >> $GITHUB_STEP_SUMMARY
+          echo "- Target: feature-0.1" >> $GITHUB_STEP_SUMMARY
+          echo "- Repositories: ${{ needs.prepare-repos.outputs.count }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Dry run: ${{ inputs.dry_run }}" >> $GITHUB_STEP_SUMMARY
