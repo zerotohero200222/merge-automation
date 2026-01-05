@@ -1,4 +1,4 @@
-name: Multi-Repository Merge (main → feature-0.2)
+name: Multi-Repository Merge (main → feature-0.1)
 
 on:
   workflow_dispatch:
@@ -29,7 +29,7 @@ on:
 env:
   ORG_NAME: ${{ github.repository_owner }}
   SOURCE_BRANCH: main
-  TARGET_BRANCH: feature-0.2
+  TARGET_BRANCH: feature-0.1
 
 jobs:
   prepare-repos:
