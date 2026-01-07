@@ -1,4 +1,4 @@
-# Source: main → Target: feature-0.1
+# Source: feature-0.1 → Target: main
 
 infra-terraform
 cloudbuild-trigger-terraform
