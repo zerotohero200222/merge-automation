@@ -1,4 +1,4 @@
-name: Multi-Repository Merge (main → feature-0.1)
+name: Multi-Repository Merge (feature-0.1 → main)
 
 on:
   workflow_dispatch:
@@ -8,18 +8,18 @@ on:
         required: true
         type: string
         default: '2025.01.15'
-      
+
       use_repo_list:
         description: 'Use repos from scripts/repos-list.txt?'
         required: true
         type: boolean
         default: true
-      
+
       specific_repos:
         description: 'Override with specific repos (comma-separated)'
         required: false
         type: string
-      
+
       dry_run:
         description: 'Dry run (test only, no actual merge)'
         required: true
@@ -28,151 +28,106 @@ on:
 
 env:
   ORG_NAME: ${{ github.repository_owner }}
-  SOURCE_BRANCH: main
-  TARGET_BRANCH: feature-0.1
+  SOURCE_BRANCH: feature-0.1
+  TARGET_BRANCH: main
 
 jobs:
-  # Job 1: Prepare repository list
   prepare-repos:
-    name: 📋 Prepare Repository List
+    name: Prepare Repository List
     runs-on: ubuntu-latest
     outputs:
       repos: ${{ steps.get-repos.outputs.repos }}
       total_count: ${{ steps.get-repos.outputs.total_count }}
-    
+
     steps:
       - name: Checkout automation repo
         uses: actions/checkout@v4
-      
+
       - name: Get repository list
         id: get-repos
         run: |
-          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-          echo "📋 Loading Repository List"
-          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-          
           if [ "${{ inputs.use_repo_list }}" == "true" ]; then
-            echo "📁 Reading from scripts/repos-list.txt"
             REPOS=$(grep -v '^#' scripts/repos-list.txt | grep -v '^[[:space:]]*$' | jq -R -s -c 'split("\n")[:-1]')
           elif [ -n "${{ inputs.specific_repos }}" ]; then
-            echo "📝 Using specific repos from input"
             REPOS=$(echo '${{ inputs.specific_repos }}' | sed 's/,/\n/g' | sed 's/ //g' | jq -R -s -c 'split("\n")[:-1]')
           else
-            echo "❌ No repository list provided"
+            echo "No repository list provided"
             exit 1
           fi
-          
+
           COUNT=$(echo "$REPOS" | jq '. | length')
-          
+
           echo "repos=$REPOS" >> $GITHUB_OUTPUT
           echo "total_count=$COUNT" >> $GITHUB_OUTPUT
-          
-          echo ""
-          echo "✅ Found $COUNT repositories:"
-          echo "$REPOS" | jq -r '.[]' | while read repo; do echo "  - $repo"; done
 
-  # Job 2: Validate configuration
   validate:
-    name: ✅ Validate Configuration
+    name: Validate Configuration
     needs: prepare-repos
     runs-on: ubuntu-latest
-    
+
     steps:
       - name: Display configuration
         run: |
-          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-          echo "🔍 Configuration Summary"
-          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-          echo "Source Branch:      main"
-          echo "Target Branch:      feature-0.1"
-          echo "Release Version:    ${{ inputs.release_version }}"
+          echo "Source Branch: feature-0.1"
+          echo "Target Branch: main"
+          echo "Release Version: ${{ inputs.release_version }}"
           echo "Total Repositories: ${{ needs.prepare-repos.outputs.total_count }}"
-          echo "Dry Run Mode:       ${{ inputs.dry_run }}"
-          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-          
-          if [ "${{ inputs.dry_run }}" == "true" ]; then
-            echo "⚠️  DRY RUN MODE - No changes will be pushed"
-          else
-            echo "🚀 PRODUCTION MODE - Changes will be pushed to repositories"
-          fi
-          
+          echo "Dry Run Mode: ${{ inputs.dry_run }}"
+
           if [ "${{ needs.prepare-repos.outputs.total_count }}" -eq "0" ]; then
-            echo "❌ No repositories to merge"
+            echo "No repositories to process"
             exit 1
           fi
-          
-          echo ""
-          echo "✅ Validation passed - proceeding with merge"
 
-  # Job 3: Merge repositories in parallel
   merge-repos:
-    name: 🔀 Merge ${{ matrix.repo }}
+    name: Merge ${{ matrix.repo }}
     needs: [prepare-repos, validate]
     runs-on: ubuntu-latest
-    
+
     strategy:
       matrix:
         repo: ${{ fromJson(needs.prepare-repos.outputs.repos) }}
       fail-fast: false
       max-parallel: 5
-    
+
     steps:
       - name: Configure Git
         run: |
           git config --global user.name "GitHub Actions Bot"
           git config --global user.email "actions@github.com"
-      
-      - name: Check if repository exists
+
+      - name: Check repository exists
         id: check-repo
         continue-on-error: true
         run: |
-          echo "🔍 Checking if ${{ matrix.repo }} exists..."
           if gh repo view ${{ env.ORG_NAME }}/${{ matrix.repo }} > /dev/null 2>&1; then
             echo "exists=true" >> $GITHUB_OUTPUT
-            echo "✅ Repository exists"
           else
             echo "exists=false" >> $GITHUB_OUTPUT
-            echo "❌ Repository not found: ${{ matrix.repo }}"
             exit 0
           fi
         env:
           GH_TOKEN: ${{ secrets.GH_PAT }}
-      
+
       - name: Clone repository
         if: steps.check-repo.outputs.exists == 'true'
         run: |
-          echo "📥 Cloning ${{ matrix.repo }}..."
-          # Clone with token authentication for push capability
           git clone https://x-access-token:${{ secrets.GH_PAT }}@github.com/${{ env.ORG_NAME }}/${{ matrix.repo }}.git repo
-        env:
-          GH_TOKEN: ${{ secrets.GH_PAT }}
-      
-      - name: Check if branches exist
+
+      - name: Check branches exist
         if: steps.check-repo.outputs.exists == 'true'
         id: check-branches
         continue-on-error: true
         run: |
           cd repo
           git fetch origin
-          
-          if git ls-remote --heads origin main | grep -q main; then
-            echo "source_exists=true" >> $GITHUB_OUTPUT
-            echo "✅ Source branch 'main' exists"
-          else
-            echo "source_exists=false" >> $GITHUB_OUTPUT
-            echo "❌ Source branch 'main' not found"
-            exit 0
-          fi
-          
-          if git ls-remote --heads origin feature-0.1 | grep -q feature-0.1; then
-            echo "target_exists=true" >> $GITHUB_OUTPUT
-            echo "✅ Target branch 'feature-0.1' exists"
-          else
-            echo "target_exists=false" >> $GITHUB_OUTPUT
-            echo "❌ Target branch 'feature-0.1' not found"
-            exit 0
-          fi
-      
+
+          git ls-remote --heads origin feature-0.1 > /dev/null || exit 0
+          git ls-remote --heads origin main > /dev/null || exit 0
+
+          echo "source_exists=true" >> $GITHUB_OUTPUT
+          echo "target_exists=true" >> $GITHUB_OUTPUT
+
       - name: Perform merge
         if: |
           steps.check-repo.outputs.exists == 'true' &&
@@ -182,144 +137,47 @@ jobs:
         continue-on-error: true
         run: |
           cd repo
-          
-          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-          echo "🔀 Merging main → feature-0.1"
-          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-          
-          # Configure Git credentials for push
-          git config user.name "GitHub Actions Bot"
-          git config user.email "actions@github.com"
-          
-          git checkout feature-0.1
-          git pull origin feature-0.1
-          
-          COMMIT_MSG="Release ${{ inputs.release_version }}: Merge main to feature-0.1"
-          
-          echo "🔗 Attempting merge..."
-          if git merge origin/main --no-ff -m "$COMMIT_MSG"; then
+
+          git checkout main
+          git pull origin main
+
+          COMMIT_MSG="Release ${{ inputs.release_version }}: Merge feature-0.1 to main"
+
+          if git merge origin/feature-0.1 --no-ff -m "$COMMIT_MSG"; then
             echo "status=success" >> $GITHUB_OUTPUT
-            echo "✅ Merge successful!"
-            
+
             if [ "${{ inputs.dry_run }}" == "false" ]; then
-              echo "⬆️  Pushing changes to remote..."
-              git push origin feature-0.1
-              echo "✅ Changes pushed successfully"
+              git push origin main
             else
-              echo "🔍 DRY RUN - Changes NOT pushed (would have pushed to feature-0.1)"
               git log -1 --oneline
             fi
           else
             echo "status=conflict" >> $GITHUB_OUTPUT
-            echo "❌ MERGE CONFLICT DETECTED"
             git merge --abort
             exit 1
           fi
-      
+
       - name: Create issue on conflict
         if: failure() && steps.merge.outputs.status == 'conflict'
         uses: actions/github-script@v7
         with:
           github-token: ${{ secrets.GH_PAT }}
           script: |
-            try {
-              await github.rest.issues.create({
-                owner: context.repo.owner,
-                repo: '${{ matrix.repo }}',
-                title: '⚠️ Merge Conflict: main → feature-0.1',
-                labels: ['merge-conflict', 'needs-attention'],
-                body: `## 🚨 Merge Conflict Detected
-                
-                **Release Version:** ${{ inputs.release_version }}
-                **Source Branch:** \`main\`
-                **Target Branch:** \`feature-0.1\`
-                **Workflow Run:** [View Details](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})
-                
-                ### ⚠️ Action Required
-                Manual merge is required for this repository.
-                
-                ### 📝 Resolution Steps
-                
-                \`\`\`bash
-                # 1. Clone the repository
-                git clone https://github.com/${{ env.ORG_NAME }}/${{ matrix.repo }}.git
-                cd ${{ matrix.repo }}
-                
-                # 2. Checkout target branch
-                git checkout feature-0.1
-                git pull origin feature-0.1
-                
-                # 3. Merge from main
-                git merge origin/main
-                
-                # 4. Resolve conflicts in your editor
-                # Look for <<<<<<< HEAD markers
-                
-                # 5. After resolving conflicts
-                git add .
-                git commit -m "Resolve merge conflicts from main"
-                
-                # 6. Push changes
-                git push origin feature-0.1
-                \`\`\`
-                
-                ### 🔍 Check Conflicts
-                \`\`\`bash
-                git status
-                git diff
-                \`\`\`
-                
-                ---
-                *Automated by Multi-Repository Merge Workflow*
-                *Triggered by: @${{ github.actor }}*`
-              });
-              console.log('✅ Issue created successfully');
-            } catch (error) {
-              console.log('⚠️ Could not create issue:', error.message);
-            }
+            await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: '${{ matrix.repo }}',
+              title: 'Merge Conflict: feature-0.1 to main',
+              body: 'Manual merge required for feature-0.1 into main.'
+            })
 
-  # Job 4: Generate summary report
   summary:
-    name: 📊 Summary Report
+    name: Summary Report
     needs: [prepare-repos, merge-repos]
     runs-on: ubuntu-latest
     if: always()
-    
+
     steps:
       - name: Generate summary
         run: |
-          echo "# 🚀 Multi-Repository Merge Summary" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "## 📋 Configuration" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "| Setting | Value |" >> $GITHUB_STEP_SUMMARY
-          echo "|---------|-------|" >> $GITHUB_STEP_SUMMARY
-          echo "| **Release Version** | \`${{ inputs.release_version }}\` |" >> $GITHUB_STEP_SUMMARY
-          echo "| **Source Branch** | \`main\` |" >> $GITHUB_STEP_SUMMARY
-          echo "| **Target Branch** | \`feature-0.1\` |" >> $GITHUB_STEP_SUMMARY
-          echo "| **Total Repositories** | ${{ needs.prepare-repos.outputs.total_count }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| **Dry Run** | ${{ inputs.dry_run }} |" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "## 📦 Repositories" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "1. infra-terraform" >> $GITHUB_STEP_SUMMARY
-          echo "2. cloudbuild-trigger-terraform" >> $GITHUB_STEP_SUMMARY
-          echo "3. cloud-run-terraform-scaling" >> $GITHUB_STEP_SUMMARY
-          echo "4. ALB-service-terraform-cloudbuild" >> $GITHUB_STEP_SUMMARY
-          echo "5. api-gateway-terraform-cloudbuild" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "## 📝 Results" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "Check individual job results above for detailed status of each repository." >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          if [ "${{ inputs.dry_run }}" == "true" ]; then
-            echo "### 🔍 Dry Run Mode" >> $GITHUB_STEP_SUMMARY
-            echo "- ✅ This was a test run - no changes were pushed" >> $GITHUB_STEP_SUMMARY
-            echo "- 📊 Review the results above" >> $GITHUB_STEP_SUMMARY
-            echo "- 🔄 Run again with **Dry run = false** to perform actual merge" >> $GITHUB_STEP_SUMMARY
-          else
-            echo "### ✅ Merge Completed" >> $GITHUB_STEP_SUMMARY
-            echo "- 🎉 Changes have been pushed to feature-0.1 branch" >> $GITHUB_STEP_SUMMARY
-            echo "- 🔍 Check for any repositories with conflicts" >> $GITHUB_STEP_SUMMARY
-            echo "- 🧪 Test the merged changes in feature-0.1" >> $GITHUB_STEP_SUMMARY
-          fi
+          echo "Merge completed from feature-0.1 to main"
+          echo "Dry run: ${{ inputs.dry_run }}"
